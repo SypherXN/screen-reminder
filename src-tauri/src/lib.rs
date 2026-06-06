@@ -1,5 +1,6 @@
 mod calendar;
 mod commands;
+mod config;
 mod contrast;
 mod dedupe;
 mod models;
@@ -23,9 +24,6 @@ use tauri::{
 };
 use tauri_plugin_autostart::MacosLauncher;
 
-#[cfg(target_os = "windows")]
-use tauri_plugin_autostart::WindowsLauncher;
-
 use commands::AppState;
 use scheduler::{spawn_push_listener, spawn_scheduler, spawn_sync_loop, SchedulerState};
 use storage::Storage;
@@ -33,28 +31,18 @@ use sync_engine::SyncEngine;
 use tray::{init_pause_menu_from_storage, TrayMenuState};
 
 fn build_app() -> tauri::Builder<tauri::Wry> {
-    let mut builder = tauri::Builder::default();
-    #[cfg(target_os = "macos")]
-    {
-        builder = builder.plugin(tauri_plugin_autostart::init(
+    tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![]),
-        ));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        builder = builder.plugin(tauri_plugin_autostart::init(
-            WindowsLauncher::AppName,
-            Some(vec![]),
-        ));
-    }
-    builder
+        ))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    config::init_config();
     env_logger::init();
 
     let storage = Arc::new(Storage::new().expect("initialize storage"));
@@ -79,6 +67,7 @@ pub fn run() {
             commands::connect_microsoft_todo,
             commands::disconnect_account,
             commands::sync_now,
+            commands::list_upcoming_reminders,
             commands::get_sync_status,
             commands::list_monitors,
             commands::get_autostart,
@@ -101,8 +90,6 @@ pub fn run() {
             commands::save_account_style,
         ])
         .setup(move |app| {
-            load_env_file();
-
             let settings_item =
                 MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let pause_item = MenuItem::with_id(app, "pause", "Pause reminders", true, None::<&str>)?;
@@ -156,6 +143,16 @@ pub fn run() {
             });
             init_pause_menu_from_storage(app.handle(), &storage);
 
+            if let Some(window) = app.get_webview_window("main") {
+                let main_window = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = main_window.hide();
+                    }
+                });
+            }
+
             let app_handle = app.handle().clone();
             spawn_scheduler(app_handle.clone(), scheduler.clone());
             spawn_sync_loop(app_handle.clone(), scheduler.clone());
@@ -169,28 +166,11 @@ pub fn run() {
             if let RunEvent::Resumed = event {
                 if let Some(state) = app.try_state::<AppState>() {
                     let sync = state.scheduler.clone();
-                    let handle = app.handle().clone();
+                    let handle = app.clone();
                     tauri::async_runtime::spawn(async move {
                         let _ = sync.run_sync(&handle).await;
                     });
                 }
             }
         });
-}
-
-fn load_env_file() {
-    for path in [".env", "../.env"] {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                if let Some((key, value)) = line.split_once('=') {
-                    std::env::set_var(key.trim(), value.trim().trim_matches('"'));
-                }
-            }
-            break;
-        }
-    }
 }

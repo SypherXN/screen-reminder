@@ -9,6 +9,7 @@ export interface OverlayLayer {
   y: number;
   z_index: number;
   width?: number;
+  height?: number;
   icon_id?: string;
   image_path?: string | null;
   font_size?: number | null;
@@ -124,6 +125,32 @@ export interface SyncStatus {
   accounts: AccountSyncStatus[];
 }
 
+export interface ReminderEvent {
+  id: string;
+  account_id: string;
+  source: string;
+  external_id: string;
+  title: string;
+  start_time: string;
+  reminder_time: string;
+  location: string | null;
+  url: string | null;
+  fired_at: string | null;
+  snoozed_until: string | null;
+  dismissed: boolean;
+}
+
+export const TASK_SOURCES = new Set(["google_tasks", "microsoft_todo"]);
+
+export const SOURCE_LABELS: Record<string, string> = {
+  google: "Google Calendar",
+  outlook: "Outlook / Microsoft 365",
+  google_tasks: "Google Tasks",
+  microsoft_todo: "Microsoft To Do",
+  caldav: "CalDAV",
+  apple: "Apple Calendar",
+};
+
 export interface OverlayPayload {
   reminder_id: string;
   account_id: string;
@@ -135,6 +162,11 @@ export interface OverlayPayload {
   settings: AppSettings;
   effective_font_color?: string | null;
   play_sound: boolean;
+  monitor_x: number;
+  monitor_y: number;
+  monitor_width: number;
+  monitor_height: number;
+  monitor_scale_factor: number;
 }
 
 export const BUILTIN_ICONS = [

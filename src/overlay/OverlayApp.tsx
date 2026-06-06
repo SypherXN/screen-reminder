@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  cursorPosition,
+  getCurrentWindow,
+  type PhysicalPosition,
+} from "@tauri-apps/api/window";
 import { ReminderBubble, reminderBubbleStyles } from "../components/ReminderBubble";
 import { api } from "../lib/api";
 import { playReminderChime } from "../lib/chime";
@@ -11,23 +15,110 @@ export function OverlayApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const dismissTimer = useRef<number | null>(null);
   const payloadRef = useRef<OverlayPayload | null>(null);
+  const bubbleWrapRef = useRef<HTMLDivElement>(null);
+  const clickThroughRef = useRef(true);
 
   useEffect(() => {
     payloadRef.current = payload;
   }, [payload]);
 
   useEffect(() => {
-    const unlistenPromise = listen<OverlayPayload>("show-reminder", (event) => {
+    const unlistenShow = listen<OverlayPayload>("show-reminder", (event) => {
       setPayload(event.payload);
       setMenuOpen(false);
       if (event.payload.play_sound) {
         playReminderChime();
       }
     });
+    const unlistenHide = listen("hide-reminder", () => {
+      setPayload(null);
+      setMenuOpen(false);
+    });
     return () => {
-      unlistenPromise.then((unlisten) => unlisten());
+      unlistenShow.then((unlisten) => unlisten());
+      unlistenHide.then((unlisten) => unlisten());
     };
   }, []);
+
+  useEffect(() => {
+    const win = getCurrentWindow();
+    if (!payload) {
+      win.hide().catch(console.error);
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      win.setIgnoreCursorEvents(true).catch(console.error);
+      clickThroughRef.current = true;
+      win.show().catch(console.error);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [payload]);
+
+  useEffect(() => {
+    if (!payload) {
+      return;
+    }
+
+    const win = getCurrentWindow();
+    let cancelled = false;
+    let pollTimer: number | null = null;
+    let windowPos: PhysicalPosition | null = null;
+    let scaleFactor = 1;
+
+    const setClickThrough = async (ignore: boolean) => {
+      if (cancelled || clickThroughRef.current === ignore) {
+        return;
+      }
+      clickThroughRef.current = ignore;
+      await win.setIgnoreCursorEvents(ignore);
+    };
+
+    const syncHitTest = async () => {
+      const wrap = bubbleWrapRef.current;
+      if (!wrap || !windowPos || cancelled) {
+        return;
+      }
+
+      const rect = wrap.getBoundingClientRect();
+      const cursor = await cursorPosition();
+      const left = windowPos.x + rect.left * scaleFactor;
+      const top = windowPos.y + rect.top * scaleFactor;
+      const right = left + rect.width * scaleFactor;
+      const bottom = top + rect.height * scaleFactor;
+      const overInteractive =
+        menuOpen ||
+        (cursor.x >= left &&
+          cursor.x <= right &&
+          cursor.y >= top &&
+          cursor.y <= bottom);
+
+      await setClickThrough(!overInteractive);
+    };
+
+    void (async () => {
+      try {
+        [windowPos, scaleFactor] = await Promise.all([
+          win.outerPosition(),
+          win.scaleFactor(),
+        ]);
+        await setClickThrough(true);
+        pollTimer = window.setInterval(() => {
+          syncHitTest().catch(console.error);
+        }, 32);
+      } catch (error) {
+        console.error(error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+      }
+      win.setIgnoreCursorEvents(false).catch(console.error);
+      clickThroughRef.current = false;
+    };
+  }, [payload, menuOpen]);
 
   useEffect(() => {
     if (dismissTimer.current) {
@@ -83,7 +174,7 @@ export function OverlayApp() {
   }, []);
 
   if (!payload) {
-    return <div className="overlay-root" />;
+    return null;
   }
 
   const { settings } = payload;
@@ -100,6 +191,8 @@ export function OverlayApp() {
           ? "overlay-random"
           : "overlay-slide";
 
+  const closeMenu = () => setMenuOpen(false);
+
   const handleDismiss = async () => {
     if (payload.reminder_id === "preview") {
       await api.hideReminderOverlay();
@@ -107,7 +200,7 @@ export function OverlayApp() {
       await api.dismissReminder(payload.reminder_id);
     }
     setPayload(null);
-    setMenuOpen(false);
+    closeMenu();
   };
 
   const handleSnooze = async (minutes: number) => {
@@ -117,7 +210,7 @@ export function OverlayApp() {
       await api.snoozeReminder(payload.reminder_id, minutes);
     }
     setPayload(null);
-    setMenuOpen(false);
+    closeMenu();
   };
 
   const handleSnoozeUntilStart = async () => {
@@ -127,14 +220,14 @@ export function OverlayApp() {
       await api.snoozeReminderUntilStart(payload.reminder_id);
     }
     setPayload(null);
-    setMenuOpen(false);
+    closeMenu();
   };
 
   const handleOpen = async () => {
     if (payload.url) {
       await api.openReminderUrl(payload.url);
     }
-    setMenuOpen(false);
+    closeMenu();
   };
 
   return (
@@ -145,79 +238,143 @@ export function OverlayApp() {
           animation: `${animationName} ${duration}s linear infinite`,
         }}
       >
-        <ReminderBubble
-          settings={displaySettings}
-          title={payload.title}
-          location={payload.location}
-          startTime={payload.start_time}
-          onClick={() => setMenuOpen((open) => !open)}
-        />
-      </div>
+        <div className="overlay-bubble-wrap" ref={bubbleWrapRef}>
+          <ReminderBubble
+            settings={displaySettings}
+            title={payload.title}
+            location={payload.location}
+            startTime={payload.start_time}
+            allowOverflow
+            onClick={() => setMenuOpen((open) => !open)}
+          />
 
-      {menuOpen && (
-        <div className="overlay-menu">
-          <button type="button" onClick={handleDismiss}>
-            Dismiss
-          </button>
-          <button type="button" onClick={handleSnoozeUntilStart}>
-            At event start
-          </button>
-          {settings.snooze_durations.map((minutes) => (
-            <button key={minutes} type="button" onClick={() => handleSnooze(minutes)}>
-              Snooze {minutes}m
-            </button>
-          ))}
-          {payload.url && (
-            <button type="button" onClick={handleOpen}>
-              Open event
-            </button>
+          {menuOpen && (
+            <div className="overlay-menu" onClick={(event) => event.stopPropagation()}>
+              <div className="overlay-menu__actions">
+                <button type="button" onClick={handleDismiss}>
+                  Dismiss
+                </button>
+                <button type="button" onClick={handleSnoozeUntilStart}>
+                  At event start
+                </button>
+                {settings.snooze_durations.map((minutes) => (
+                  <button key={minutes} type="button" onClick={() => handleSnooze(minutes)}>
+                    Snooze {minutes}m
+                  </button>
+                ))}
+                {payload.url && (
+                  <button type="button" onClick={handleOpen}>
+                    Open event
+                  </button>
+                )}
+              </div>
+              <div className="overlay-menu__shortcuts">
+                <span>
+                  <kbd>Esc</kbd> dismiss
+                </span>
+                <span>
+                  <kbd>S</kbd> snooze
+                </span>
+                {payload.url && (
+                  <span>
+                    <kbd>O</kbd> open
+                  </span>
+                )}
+              </div>
+            </div>
           )}
-          <p className="mt-1 text-center text-xs text-slate-400">
-            Esc dismiss · S snooze · O open
-          </p>
         </div>
-      )}
+      </div>
 
       <style>{`
         ${reminderBubbleStyles}
+        html, body, #root {
+          margin: 0;
+          width: 100%;
+          height: 100%;
+          overflow: hidden;
+          background: transparent !important;
+        }
         .overlay-root {
           width: 100vw;
           height: 100vh;
           overflow: hidden;
           background: transparent;
           position: relative;
+          pointer-events: none;
         }
         .overlay-track {
           position: absolute;
+          pointer-events: none;
+        }
+        .overlay-bubble-wrap {
+          position: relative;
+          pointer-events: auto;
         }
         .overlay-menu {
-          position: fixed;
-          top: 50%;
+          position: absolute;
+          top: calc(100% + 8px);
           left: 50%;
-          transform: translate(-50%, -50%);
+          transform: translateX(-50%);
+          min-width: 180px;
           display: flex;
           flex-direction: column;
           gap: 8px;
-          padding: 12px;
-          background: rgba(15, 23, 42, 0.95);
-          border: 1px solid rgba(148, 163, 184, 0.35);
-          border-radius: 12px;
-          z-index: 20;
+          padding: 10px;
+          background: rgba(15, 23, 42, 0.94);
+          border: 1px solid rgba(148, 163, 184, 0.3);
+          border-radius: 10px;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+        }
+        .overlay-menu__actions {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
         }
         .overlay-menu button {
           background: #1e293b;
           color: #e2e8f0;
-          border: none;
-          border-radius: 8px;
-          padding: 8px 12px;
+          border: 1px solid rgba(148, 163, 184, 0.12);
+          border-radius: 6px;
+          padding: 6px 8px;
+          font-size: 12px;
+          text-align: left;
           cursor: pointer;
+          white-space: nowrap;
         }
         .overlay-menu button:hover {
           background: #334155;
         }
+        .overlay-menu__shortcuts {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px 10px;
+          padding-top: 6px;
+          border-top: 1px solid rgba(148, 163, 184, 0.18);
+          font-size: 11px;
+          color: #94a3b8;
+        }
+        .overlay-menu__shortcuts span {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+        }
+        .overlay-menu kbd {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 22px;
+          padding: 1px 5px;
+          border-radius: 4px;
+          border: 1px solid rgba(148, 163, 184, 0.35);
+          background: #0f172a;
+          color: #f8fafc;
+          font-size: 10px;
+          font-family: inherit;
+        }
         @keyframes overlay-slide {
-          0% { left: -20%; top: 50%; transform: translateY(-50%); }
-          100% { left: 100%; top: 50%; transform: translateY(-50%); }
+          0% { left: 0%; top: 50%; transform: translateY(-50%); }
+          100% { left: 100%; top: 50%; transform: translate(-100%, -50%); }
         }
         @keyframes overlay-bounce {
           0%, 100% { left: 8%; top: 18%; }
@@ -244,4 +401,8 @@ export function OverlayApp() {
 export async function initOverlayWindow() {
   const window = getCurrentWindow();
   await window.setDecorations(false);
+  await window.setSkipTaskbar(true);
+  await window.setAlwaysOnTop(true);
+  await window.setIgnoreCursorEvents(true);
+  await window.hide();
 }

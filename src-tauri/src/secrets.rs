@@ -46,7 +46,7 @@ fn load_raw(kind: &str, account_id: &str) -> Result<Option<String>> {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn delete_raw(kind: &str, account_id: &str) -> Result<()> {
     let entry = keyring::Entry::new(SERVICE, &format!("{kind}:{account_id}"))?;
-    match entry.delete_password() {
+    match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(err) => Err(err.into()),
     }

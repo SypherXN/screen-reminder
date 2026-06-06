@@ -1,13 +1,17 @@
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { ReminderBubble, reminderBubbleStyles } from "./ReminderBubble";
+import { api } from "../lib/api";
 import type { AppSettings } from "../lib/types";
 import { previewStartTime } from "../lib/timeUntil";
 
 interface Props {
   settings: AppSettings;
-  onPreview: () => void;
+  onPreview: () => Promise<void>;
 }
 
 export function AnimationPreview({ settings, onPreview }: Props) {
+  const [onScreen, setOnScreen] = useState(false);
   const duration = 6 / settings.animation_speed;
   const animationName =
     settings.animation_path === "bounce"
@@ -18,15 +22,37 @@ export function AnimationPreview({ settings, onPreview }: Props) {
           ? "preview-random"
           : "preview-slide";
 
+  useEffect(() => {
+    const unlisten = listen("hide-reminder", () => setOnScreen(false));
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  const toggleOnScreen = async () => {
+    if (onScreen) {
+      await api.hideReminderOverlay();
+      setOnScreen(false);
+      return;
+    }
+    await onPreview();
+    setOnScreen(true);
+  };
+
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="text-lg font-medium">Live preview</h2>
         <button
-          onClick={onPreview}
-          className="rounded-lg bg-indigo-600 px-3 py-2 text-sm hover:bg-indigo-500"
+          type="button"
+          onClick={() => toggleOnScreen().catch(console.error)}
+          className={`rounded-lg px-3 py-2 text-sm ${
+            onScreen
+              ? "bg-slate-700 hover:bg-slate-600"
+              : "bg-indigo-600 hover:bg-indigo-500"
+          }`}
         >
-          Show on screen
+          {onScreen ? "Hide from screen" : "Show on screen"}
         </button>
       </div>
 

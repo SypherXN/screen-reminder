@@ -6,11 +6,25 @@ Built with **Tauri 2**, **React**, **TypeScript**, **Tailwind CSS**, and **SQLit
 
 ## Features
 
-- **Calendar sources**: Google Calendar (OAuth), Microsoft 365 / Outlook (OAuth), CalDAV (iCloud, Fastmail, Nextcloud, etc.), Apple Calendar (macOS)
+- **Calendar sources**: Google Calendar (OAuth), Microsoft 365 / Outlook (OAuth), CalDAV (iCloud, Fastmail, Nextcloud, etc.), Apple Calendar (macOS), Google Tasks, Microsoft To Do
+- **Multiple accounts per provider**: Connect several Google or Microsoft accounts; each account can have its own overlay styling
 - **Animated overlay**: Always-on-top transparent window with moving reminder icon and optional event title
-- **Interactive reminders**: Click to dismiss, snooze (configurable durations), or open the event URL
-- **Customization**: Icon, size, animation path/speed, fonts, colors, auto-dismiss
+- **Click-through overlay**: Clicks pass through to your desktop and apps while the reminder animates; hover the notification bubble to interact with it
+- **Interactive reminders**: Click the bubble for dismiss, snooze, or open event; keyboard shortcuts `Esc` (dismiss), `S` (snooze), `O` (open URL)
+- **Upcoming view**: List of scheduled reminders and events in the settings window
+- **Customization**: Icon, size, animation path/speed, fonts, colors, auto-dismiss, chime sound, auto-contrast text, composition presets, per-account style overrides
+- **Layer editor**: Preview notification bounds at the configured canvas size while editing overlay composition
 - **System tray**: Run in background; open settings, pause reminders, or quit from the tray
+
+## Recent updates
+
+- **Click-through reminders** — overlay windows ignore mouse clicks by default so you can keep working; the bubble and menu become clickable when the cursor is over them
+- **Calendar sync fixes** — correct parsing of Google/Outlook timed events (`dateTime`), no more false “due now” popups or missing Upcoming entries
+- **Multi-account OAuth** — account picker on connect; duplicate accounts detected by email
+- **Upcoming tab** — browse reminders and events sorted by time
+- **OAuth reliability** — Windows URL handling fix, Google scopes/consent flow, background sync after connect (no app close on OAuth)
+- **Build-time OAuth config** — Google/Microsoft client IDs and secrets are read from `.env` at compile time and embedded in the binary (no `.env` needed at runtime)
+- **UI polish** — updated app icon, layer editor canvas border, account grouping in settings
 
 ## Prerequisites
 
@@ -18,20 +32,21 @@ Built with **Tauri 2**, **React**, **TypeScript**, **Tailwind CSS**, and **SQLit
 - Rust stable (`rustup`)
 - Platform dependencies:
   - **macOS**: Xcode command line tools
-  - **Windows**: WebView2 (usually preinstalled on Windows 10/11)
+  - **Windows**: WebView2 (usually preinstalled on Windows 10/11), Visual Studio Build Tools with **Desktop development with C++**
   - **Linux (dev only)**: `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `libdbus-1-dev`, `pkg-config`
 
 ## OAuth setup
 
-Copy `.env.example` to `.env` in the project root and fill in credentials.
+Copy `.env.example` to `.env` in the project root and fill in credentials **before building**. Values are embedded at compile time via `src-tauri/build.rs` — end users do not need a `.env` file.
 
 ### Google Calendar
 
 1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
-2. Enable the **Google Calendar API**
+2. Enable the **Google Calendar API** (and **Google Tasks API** for task sync)
 3. Create an **OAuth 2.0 Client ID** (Desktop app)
 4. Add authorized redirect URI: `http://127.0.0.1:PORT/callback` (loopback; the app picks a random port)
 5. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`
+6. If the OAuth app is in **Testing** mode, add your Google account under **Test users**
 
 ### Microsoft Outlook / 365
 
@@ -47,10 +62,6 @@ No OAuth keys required. Connect from the app with server URL, username, and pass
 ### Apple Calendar (macOS only)
 
 Grant Calendar access when prompted (System Settings → Privacy → Calendars). Events are read via Calendar.app automation on macOS.
-
-### Google Tasks / Microsoft To Do
-
-Enable **Google Tasks API** in Google Cloud for task sync. For Microsoft To Do, add **`Tasks.Read`** to Azure API permissions (in addition to `Calendars.Read`).
 
 ### Push sync (optional)
 
@@ -72,6 +83,8 @@ npm run tauri build
 
 Installers are written to `src-tauri/target/release/bundle/`.
 
+**Important:** OAuth credentials must be present in `.env` when you run `tauri build`. Rebuild after changing `.env`.
+
 **Step-by-step build instructions:** see [BUILD.md](BUILD.md).
 
 ## Code signing (release)
@@ -85,10 +98,13 @@ See [Tauri documentation](https://v2.tauri.app/distribute/sign/) for platform-sp
 
 ```
 src/                 React settings UI + overlay frontend
+  components/        Settings panels, ReminderBubble, UpcomingPanel
+  overlay/           Full-screen reminder overlay (click-through)
 src-tauri/           Rust backend (sync, scheduler, storage, OAuth)
   src/calendar/      Google, Outlook, CalDAV, Apple providers
   src/scheduler.rs   Reminder polling + overlay dispatch
   src/storage.rs     SQLite persistence
+  build.rs           Embeds .env OAuth config at compile time
 ```
 
 ## CI

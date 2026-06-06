@@ -79,3 +79,11 @@ pub fn parse_ical_datetime(value: &str) -> Result<DateTime<Utc>> {
     }
     anyhow::bail!("unsupported datetime format: {value}")
 }
+
+pub fn parse_all_day_date(value: &str) -> Result<DateTime<Utc>> {
+    let naive = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").context("parse date")?;
+    let naive_dt = naive
+        .and_hms_opt(9, 0, 0)
+        .context("build all-day datetime")?;
+    Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc))
+}

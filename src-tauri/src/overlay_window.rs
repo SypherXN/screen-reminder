@@ -3,6 +3,26 @@ use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, Webview
 
 use crate::models::AppSettings;
 
+pub struct MonitorBounds {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale_factor: f64,
+}
+
+pub fn monitor_bounds(monitor: &Monitor) -> MonitorBounds {
+    let position = monitor.position();
+    let size = monitor.size();
+    MonitorBounds {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+        scale_factor: monitor.scale_factor(),
+    }
+}
+
 pub fn list_monitors(app: &AppHandle) -> Result<Vec<crate::models::MonitorInfo>> {
     let monitors = app.available_monitors().context("list monitors")?;
     let primary = app.primary_monitor().ok().flatten();
@@ -37,6 +57,11 @@ pub fn resolve_target_monitors(app: &AppHandle, settings: &AppSettings) -> Resul
     match settings.monitor_target.as_str() {
         "all" => Ok(monitors),
         "active" => {
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(Some(monitor)) = window.current_monitor() {
+                    return Ok(vec![monitor]);
+                }
+            }
             if let Some(window) = app.get_webview_window("overlay") {
                 if let Ok(Some(monitor)) = window.current_monitor() {
                     return Ok(vec![monitor]);

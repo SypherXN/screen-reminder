@@ -17,9 +17,9 @@ export function createLayer(
       icon_id: "bell",
       image_path: null,
     },
-    title: { name: "Event title", x: 50, y: 35 },
+    title: { name: "Event title", x: 50, y: 35, width: 220, height: 52 },
     countdown: { name: "Countdown", x: 50, y: 65 },
-    text: { name: "Text", x: 50, y: 50, text_content: "Custom text", font_size: null },
+    text: { name: "Text", x: 50, y: 50, text_content: "Custom text", font_size: null, width: 140, height: 40 },
   };
 
   return {

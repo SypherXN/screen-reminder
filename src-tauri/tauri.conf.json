@@ -21,20 +21,6 @@
         "resizable": true,
         "visible": false,
         "center": true
-      },
-      {
-        "label": "overlay",
-        "title": "Screen Reminder Overlay",
-        "url": "overlay.html",
-        "width": 800,
-        "height": 200,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "visible": false,
-        "skipTaskbar": true,
-        "focus": false,
-        "resizable": false
       }
     ],
     "security": {
@@ -42,7 +28,7 @@
     },
     "trayIcon": {
       "iconPath": "icons/icon.png",
-      "iconAsTemplate": true
+      "iconAsTemplate": false
     }
   },
   "bundle": {
@@ -52,13 +38,11 @@
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "10.15",
-      "infoPlist": {
-        "NSCalendarsUsageDescription": "Screen Reminder reads your calendar events to show animated reminders when alarms are due."
-      }
+      "minimumSystemVersion": "10.15"
     }
   },
   "plugins": {}

@@ -3,16 +3,20 @@ use chrono::{DateTime, Duration, Utc};
 use oauth2::basic::BasicClient;
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, Scope, TokenUrl,
+    PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::Deserialize;
 use tiny_http::{Header, Response, Server};
 use url::Url;
 
+use crate::config;
 use crate::calendar::{reminder_from_parts, CalendarProvider, SyncResult};
 use crate::calendar::google::GoogleProvider;
-use crate::oauth_util::{open_browser, parse_query_param, pick_port};
+use crate::oauth_util::{
+    oauth_http_client, open_browser, parse_oauth_error, parse_query_param, pick_port, OAuthClient,
+    GOOGLE_OAUTH_PROMPT,
+};
 use crate::models::CalendarAccount;
 use crate::secrets;
 
@@ -31,10 +35,9 @@ impl GoogleTasksProvider {
         })
     }
 
-    fn oauth_client(redirect_uri: &str) -> Result<BasicClient> {
-        let client_id = std::env::var("GOOGLE_CLIENT_ID").context("GOOGLE_CLIENT_ID not set")?;
-        let client_secret =
-            std::env::var("GOOGLE_CLIENT_SECRET").context("GOOGLE_CLIENT_SECRET not set")?;
+    fn oauth_client(redirect_uri: &str) -> Result<OAuthClient> {
+        let client_id = config::require_env("GOOGLE_CLIENT_ID")?;
+        let client_secret = config::require_env("GOOGLE_CLIENT_SECRET")?;
 
         Ok(BasicClient::new(ClientId::new(client_id))
             .set_client_secret(ClientSecret::new(client_secret))
@@ -54,6 +57,11 @@ impl GoogleTasksProvider {
             .add_scope(Scope::new(
                 "https://www.googleapis.com/auth/tasks.readonly".to_string(),
             ))
+            .add_scope(Scope::new(
+                "https://www.googleapis.com/auth/userinfo.email".to_string(),
+            ))
+            .add_extra_param("access_type", "offline")
+            .add_extra_param("prompt", GOOGLE_OAUTH_PROMPT)
             .set_pkce_challenge(pkce_challenge)
             .url();
 
@@ -65,12 +73,16 @@ impl GoogleTasksProvider {
             .recv()
             .map_err(|err| anyhow::anyhow!("oauth recv: {err}"))?;
         let query = request.url().split('?').nth(1).unwrap_or("");
+        if let Some(error) = parse_oauth_error(query) {
+            anyhow::bail!("Google sign-in failed: {error}");
+        }
         let code = parse_query_param(query, "code").context("missing authorization code")?;
 
+        let http = oauth_http_client();
         let token = client
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
-            .request_async(oauth2::reqwest::async_http_client)
+            .request_async(&http)
             .await
             .context("exchange token")?;
 

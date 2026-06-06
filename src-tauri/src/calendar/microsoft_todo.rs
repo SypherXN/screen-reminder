@@ -3,14 +3,16 @@ use chrono::{DateTime, Duration, Utc};
 use oauth2::basic::BasicClient;
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
-    RedirectUrl, Scope, TokenUrl,
+    RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::Deserialize;
 use tiny_http::{Header, Response, Server};
 
-use crate::calendar::{reminder_from_parts, CalendarProvider, SyncResult};
+use crate::config;
+use crate::calendar::{parse_ical_datetime, parse_all_day_date, reminder_from_parts, CalendarProvider, SyncResult};
 use crate::calendar::outlook::OutlookProvider;
+use crate::oauth_util::{oauth_http_client, OAuthClient, MICROSOFT_OAUTH_PROMPT, parse_oauth_error};
 use crate::models::CalendarAccount;
 use crate::secrets;
 
@@ -29,10 +31,9 @@ impl MicrosoftTodoProvider {
         })
     }
 
-    fn oauth_client(redirect_uri: &str) -> Result<BasicClient> {
-        let client_id = std::env::var("MICROSOFT_CLIENT_ID").context("MICROSOFT_CLIENT_ID not set")?;
-        let client_secret = std::env::var("MICROSOFT_CLIENT_SECRET")
-            .context("MICROSOFT_CLIENT_SECRET not set")?;
+    fn oauth_client(redirect_uri: &str) -> Result<OAuthClient> {
+        let client_id = config::require_env("MICROSOFT_CLIENT_ID")?;
+        let client_secret = config::require_env("MICROSOFT_CLIENT_SECRET")?;
 
         Ok(BasicClient::new(ClientId::new(client_id))
             .set_client_secret(ClientSecret::new(client_secret))
@@ -52,6 +53,7 @@ impl MicrosoftTodoProvider {
             .add_scope(Scope::new("Tasks.Read".to_string()))
             .add_scope(Scope::new("offline_access".to_string()))
             .add_scope(Scope::new("User.Read".to_string()))
+            .add_extra_param("prompt", MICROSOFT_OAUTH_PROMPT)
             .set_pkce_challenge(pkce_challenge)
             .url();
 
@@ -61,13 +63,17 @@ impl MicrosoftTodoProvider {
             .map_err(|err| anyhow::anyhow!("oauth server: {err}"))?;
         let request = server.recv().map_err(|err| anyhow::anyhow!("oauth recv: {err}"))?;
         let query = request.url().split('?').nth(1).unwrap_or("");
+        if let Some(error) = parse_oauth_error(query) {
+            anyhow::bail!("Microsoft sign-in failed: {error}");
+        }
         let code = crate::oauth_util::parse_query_param(query, "code")
             .context("missing authorization code")?;
 
+        let http = oauth_http_client();
         let token = client
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
-            .request_async(oauth2::reqwest::async_http_client)
+            .request_async(&http)
             .await
             .context("exchange token")?;
 
@@ -149,10 +155,16 @@ impl MicrosoftTodoProvider {
                 .await?;
 
             for task in tasks.value.unwrap_or_default() {
-                let Some(due) = task.due_date_time.and_then(|d| d.date_time) else {
+                let Some(due_raw) = task.due_date_time.and_then(|d| d.date_time) else {
                     continue;
                 };
-                let due_time = due.parse().unwrap_or_else(|_| Utc::now());
+                let Some(due_time) = parse_ical_datetime(&due_raw)
+                    .ok()
+                    .or_else(|| parse_all_day_date(&due_raw).ok())
+                else {
+                    log::warn!("skipping todo {:?}: could not parse due time", task.title);
+                    continue;
+                };
                 let title = task.title.unwrap_or_else(|| "Untitled task".to_string());
                 let id = task.id.unwrap_or_else(|| title.clone());
 
@@ -191,6 +203,7 @@ struct TodoTasksResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TodoTask {
     id: Option<String>,
     title: Option<String>,
@@ -199,6 +212,7 @@ struct TodoTask {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TodoDateTime {
     date_time: Option<String>,
 }

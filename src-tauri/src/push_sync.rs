@@ -6,6 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::config;
 use crate::models::{CalendarAccount, PushSubscription};
 use crate::storage::Storage;
 
@@ -29,9 +30,7 @@ pub fn device_id(storage: &Storage) -> Result<String> {
 }
 
 pub fn relay_url() -> Option<String> {
-    std::env::var("PUSH_RELAY_URL")
-        .ok()
-        .filter(|value| !value.is_empty())
+    config::env_var("PUSH_RELAY_URL")
 }
 
 pub async fn register_all(storage: Arc<Storage>) -> Result<()> {

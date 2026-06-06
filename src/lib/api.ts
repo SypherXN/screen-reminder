@@ -8,6 +8,7 @@ import type {
   CompositionPreset,
   MonitorInfo,
   PlatformInfo,
+  ReminderEvent,
   SyncStatus,
 } from "./types";
 
@@ -41,6 +42,7 @@ const mockSettings: AppSettings = normalizeSettings({
 
 let devSettings: AppSettings = mockSettings;
 let devAccounts: CalendarAccount[] = [];
+let devReminders: ReminderEvent[] = [];
 let devLastSync: string | null = null;
 let devAutostart = false;
 
@@ -65,7 +67,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     case "get_sync_status":
       return {
         last_sync: devLastSync,
-        reminder_count: 0,
+        reminder_count: devReminders.length,
         account_count: devAccounts.length,
         accounts: devAccounts.map((account) => ({
           account_id: account.id,
@@ -73,9 +75,11 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
           source: account.source,
           last_sync: devLastSync,
           last_error: null,
-          reminders_synced: 0,
+          reminders_synced: devReminders.filter((r) => r.account_id === account.id).length,
         })),
       } satisfies SyncStatus as T;
+    case "list_upcoming_reminders":
+      return devReminders as T;
     case "list_monitors":
       return [
         {
@@ -111,10 +115,30 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
       };
       devAccounts = [...devAccounts, account];
       devLastSync = new Date().toISOString();
+      const start = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const reminder = new Date(Date.now() + 50 * 60 * 1000).toISOString();
+      devReminders = [
+        ...devReminders,
+        {
+          id: crypto.randomUUID(),
+          account_id: account.id,
+          source: account.source,
+          external_id: "demo-1",
+          title: account.source.includes("task") ? "Finish quarterly report" : "Team standup",
+          start_time: start,
+          reminder_time: reminder,
+          location: account.source.includes("task") ? null : "Zoom",
+          url: null,
+          fired_at: null,
+          snoozed_until: null,
+          dismissed: false,
+        },
+      ];
       return account as T;
     }
     case "disconnect_account":
       devAccounts = devAccounts.filter((a) => a.id !== args?.accountId);
+      devReminders = devReminders.filter((r) => r.account_id !== args?.accountId);
       return undefined as T;
     case "sync_now":
       devLastSync = new Date().toISOString();
@@ -168,6 +192,8 @@ export const api = {
   disconnectAccount: (accountId: string) =>
     call<void>("disconnect_account", { accountId }),
   syncNow: () => call<number>("sync_now"),
+  listUpcomingReminders: (limit?: number) =>
+    call<ReminderEvent[]>("list_upcoming_reminders", { limit }),
   getSyncStatus: () => call<SyncStatus>("get_sync_status"),
   listMonitors: () => call<MonitorInfo[]>("list_monitors"),
   getAutostart: () => call<boolean>("get_autostart"),

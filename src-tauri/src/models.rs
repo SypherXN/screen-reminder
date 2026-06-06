@@ -146,6 +146,8 @@ pub struct OverlayLayer {
     #[serde(default)]
     pub width: Option<u32>,
     #[serde(default)]
+    pub height: Option<u32>,
+    #[serde(default)]
     pub icon_id: Option<String>,
     #[serde(default)]
     pub image_path: Option<String>,
@@ -295,6 +297,7 @@ fn default_composition_from_settings(settings: &AppSettings) -> OverlayCompositi
         width: Some(settings.icon_size),
         icon_id: Some(settings.icon_id.clone()),
         image_path: settings.custom_icon_path.clone(),
+        height: None,
         font_size: None,
         text_content: None,
     }];
@@ -312,6 +315,7 @@ fn default_composition_from_settings(settings: &AppSettings) -> OverlayCompositi
             width: None,
             icon_id: None,
             image_path: None,
+            height: None,
             font_size: None,
             text_content: None,
         });
@@ -330,6 +334,7 @@ fn default_composition_from_settings(settings: &AppSettings) -> OverlayCompositi
             width: None,
             icon_id: None,
             image_path: None,
+            height: None,
             font_size: None,
             text_content: None,
         });
@@ -356,6 +361,7 @@ fn composition_from_layout(settings: &AppSettings, layout: &OverlayLayout) -> Ov
         width: Some(settings.icon_size),
         icon_id: Some(settings.icon_id.clone()),
         image_path: settings.custom_icon_path.clone(),
+        height: None,
         font_size: None,
         text_content: None,
     }];
@@ -373,6 +379,7 @@ fn composition_from_layout(settings: &AppSettings, layout: &OverlayLayout) -> Ov
             width: None,
             icon_id: None,
             image_path: None,
+            height: None,
             font_size: None,
             text_content: None,
         });
@@ -391,6 +398,7 @@ fn composition_from_layout(settings: &AppSettings, layout: &OverlayLayout) -> Ov
             width: None,
             icon_id: None,
             image_path: None,
+            height: None,
             font_size: None,
             text_content: None,
         });
@@ -450,6 +458,20 @@ pub struct OverlayPayload {
     pub effective_font_color: Option<String>,
     #[serde(default = "default_play_sound")]
     pub play_sound: bool,
+    #[serde(default)]
+    pub monitor_x: i32,
+    #[serde(default)]
+    pub monitor_y: i32,
+    #[serde(default)]
+    pub monitor_width: u32,
+    #[serde(default)]
+    pub monitor_height: u32,
+    #[serde(default = "default_monitor_scale_factor")]
+    pub monitor_scale_factor: f64,
+}
+
+fn default_monitor_scale_factor() -> f64 {
+    1.0
 }
 
 fn default_play_sound() -> bool {

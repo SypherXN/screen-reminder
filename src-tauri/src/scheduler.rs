@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::contrast::sample_text_color_at;
 use crate::models::{AppSettings, OverlayPayload};
-use crate::overlay_window::{position_overlay_window, resolve_target_monitors};
+use crate::overlay_window::{monitor_bounds, position_overlay_window, resolve_target_monitors};
 use crate::quiet_hours::is_quiet_hours;
 use crate::settings_merge::merge_account_style;
 use crate::storage::Storage;
@@ -90,6 +90,11 @@ impl SchedulerState {
                 settings: effective_settings,
                 effective_font_color,
                 play_sound,
+                monitor_x: 0,
+                monitor_y: 0,
+                monitor_width: 0,
+                monitor_height: 0,
+                monitor_scale_factor: 1.0,
             };
 
             if let Err(err) = show_overlay(app, &settings, payload).await {
@@ -127,9 +132,10 @@ pub async fn show_overlay_for_preview(
 async fn show_overlay(
     app: &AppHandle,
     settings: &AppSettings,
-    payload: OverlayPayload,
+    mut payload: OverlayPayload,
 ) -> Result<()> {
     let monitors = resolve_target_monitors(app, settings)?;
+    let mut active_labels = Vec::new();
 
     for (index, monitor) in monitors.iter().enumerate() {
         let label = if monitors.len() == 1 {
@@ -142,25 +148,62 @@ async fn show_overlay(
             existing
         } else {
             let url = WebviewUrl::App("overlay.html".into());
-            WebviewWindowBuilder::new(app, &label, url)
-                .title("Screen Reminder Overlay")
+            let window = WebviewWindowBuilder::new(app, &label, url)
+                .title("")
                 .decorations(false)
                 .transparent(true)
                 .always_on_top(true)
                 .skip_taskbar(true)
                 .focused(false)
+                .visible(false)
                 .resizable(false)
-                .build()?
+                .build()?;
+            let _ = window.set_ignore_cursor_events(true);
+            window
         };
 
+        let bounds = monitor_bounds(monitor);
+        payload.monitor_x = bounds.x;
+        payload.monitor_y = bounds.y;
+        payload.monitor_width = bounds.width;
+        payload.monitor_height = bounds.height;
+        payload.monitor_scale_factor = bounds.scale_factor;
+
         position_overlay_window(&window, monitor)?;
-        window.show()?;
-        if monitors.len() == 1 {
-            window.set_focus()?;
-        }
+        let _ = window.set_ignore_cursor_events(true);
         window.emit("show-reminder", &payload)?;
+        active_labels.push(label);
     }
 
+    hide_stale_overlay_windows(app, &active_labels)?;
+
+    Ok(())
+}
+
+fn overlay_window_labels() -> [&'static str; 9] {
+    [
+        "overlay",
+        "overlay-0",
+        "overlay-1",
+        "overlay-2",
+        "overlay-3",
+        "overlay-4",
+        "overlay-5",
+        "overlay-6",
+        "overlay-7",
+    ]
+}
+
+fn hide_stale_overlay_windows(app: &AppHandle, active_labels: &[String]) -> Result<()> {
+    for label in overlay_window_labels() {
+        if active_labels.iter().any(|active| active == label) {
+            continue;
+        }
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.emit("hide-reminder", ());
+            window.hide()?;
+        }
+    }
     Ok(())
 }
 
@@ -212,10 +255,12 @@ pub fn spawn_push_listener(app: AppHandle, state: Arc<SchedulerState>) {
 
 pub async fn hide_all_overlays(app: &AppHandle) -> Result<()> {
     if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.emit("hide-reminder", ());
         window.hide()?;
     }
     for index in 0..8 {
         if let Some(window) = app.get_webview_window(&format!("overlay-{index}")) {
+            let _ = window.emit("hide-reminder", ());
             window.hide()?;
         }
     }

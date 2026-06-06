@@ -2,36 +2,40 @@ import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./lib/api";
 import { normalizeSettings } from "./lib/composition";
-import type { AppSettings, CalendarAccount, PlatformInfo, SyncStatus } from "./lib/types";
+import type { AppSettings, CalendarAccount, PlatformInfo, ReminderEvent, SyncStatus } from "./lib/types";
 import { AccountsPanel } from "./components/AccountsPanel";
 import { AdvancedOptionsPanel } from "./components/AdvancedOptionsPanel";
 import { AppearancePanel } from "./components/AppearancePanel";
 import { AnimationPreview } from "./components/AnimationPreview";
 import { GeneralSettingsPanel } from "./components/GeneralSettingsPanel";
 import { StatusBar } from "./components/StatusBar";
+import { UpcomingPanel } from "./components/UpcomingPanel";
 
-type Tab = "accounts" | "appearance" | "advanced" | "general";
+type Tab = "upcoming" | "accounts" | "appearance" | "advanced" | "general";
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("accounts");
+  const [tab, setTab] = useState<Tab>("upcoming");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [accounts, setAccounts] = useState<CalendarAccount[]>([]);
+  const [upcoming, setUpcoming] = useState<ReminderEvent[]>([]);
   const [platform, setPlatform] = useState<PlatformInfo | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [nextSettings, nextAccounts, nextPlatform, nextSync] = await Promise.all([
+    const [nextSettings, nextAccounts, nextPlatform, nextSync, nextUpcoming] = await Promise.all([
       api.getSettings(),
       api.listAccounts(),
       api.getPlatformInfo(),
       api.getSyncStatus(),
+      api.listUpcomingReminders(),
     ]);
     setSettings(normalizeSettings(nextSettings));
     setAccounts(nextAccounts);
     setPlatform(nextPlatform);
     setSyncStatus(nextSync);
+    setUpcoming(nextUpcoming);
   }, []);
 
   useEffect(() => {
@@ -63,7 +67,9 @@ export default function App() {
     try {
       await action();
       await refresh();
-      setMessage(label);
+      if (label) {
+        setMessage(label);
+      }
     } catch (err) {
       setMessage(String(err));
     } finally {
@@ -73,15 +79,15 @@ export default function App() {
 
   if (!settings || !platform) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-300">
+      <div className="flex h-screen items-center justify-center overflow-hidden bg-slate-950 text-slate-300">
         Loading…
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="border-b border-slate-800 px-6 py-4">
+    <div className="flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-100">
+      <header className="shrink-0 border-b border-slate-800 px-6 py-4">
         <div className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-xl font-semibold">Screen Reminder</h1>
@@ -107,8 +113,16 @@ export default function App() {
         </div>
       </header>
 
-      <div className="mx-auto flex max-w-6xl gap-6 px-6 py-6">
-        <nav className="flex w-48 shrink-0 flex-col gap-2">
+      <div className="mx-auto flex min-h-0 flex-1 max-w-6xl gap-6 overflow-hidden px-6 py-6">
+        <nav className="flex w-48 shrink-0 flex-col gap-2 overflow-y-auto">
+          <button
+            className={`rounded-lg px-4 py-2 text-left text-sm ${
+              tab === "upcoming" ? "bg-indigo-600" : "bg-slate-900 hover:bg-slate-800"
+            }`}
+            onClick={() => setTab("upcoming")}
+          >
+            Upcoming
+          </button>
           <button
             className={`rounded-lg px-4 py-2 text-left text-sm ${
               tab === "accounts" ? "bg-indigo-600" : "bg-slate-900 hover:bg-slate-800"
@@ -143,14 +157,22 @@ export default function App() {
           </button>
         </nav>
 
-        <main className="flex-1 space-y-4">
+        <main className="min-h-0 flex-1 space-y-4 overflow-y-auto">
           {message && (
             <div className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-200">
               {message}
             </div>
           )}
 
-          {tab === "accounts" ? (
+          {tab === "upcoming" ? (
+            <UpcomingPanel
+              reminders={upcoming}
+              accounts={accounts}
+              busy={busy}
+              onSync={() => runAction("Sync complete", () => api.syncNow().then(() => {}))}
+              onOpenUrl={(url) => api.openReminderUrl(url).catch((err) => setMessage(String(err)))}
+            />
+          ) : tab === "accounts" ? (
             <AccountsPanel
               accounts={accounts}
               accountSync={syncStatus?.accounts ?? []}
@@ -158,28 +180,33 @@ export default function App() {
               globalSettings={settings}
               busy={busy}
               onConnectGoogle={() =>
-                runAction("Google Calendar connected", async () => {
-                  await api.connectGoogle();
+                runAction("", async () => {
+                  const account = await api.connectGoogle();
+                  setMessage(`Connected ${account.display_name}`);
                 })
               }
               onConnectOutlook={() =>
-                runAction("Outlook connected", async () => {
-                  await api.connectOutlook();
+                runAction("", async () => {
+                  const account = await api.connectOutlook();
+                  setMessage(`Connected ${account.display_name}`);
                 })
               }
               onConnectGoogleTasks={() =>
-                runAction("Google Tasks connected", async () => {
-                  await api.connectGoogleTasks();
+                runAction("", async () => {
+                  const account = await api.connectGoogleTasks();
+                  setMessage(`Connected ${account.display_name}`);
                 })
               }
               onConnectMicrosoftTodo={() =>
-                runAction("Microsoft To Do connected", async () => {
-                  await api.connectMicrosoftTodo();
+                runAction("", async () => {
+                  const account = await api.connectMicrosoftTodo();
+                  setMessage(`Connected ${account.display_name}`);
                 })
               }
               onConnectCaldav={async (request) =>
-                runAction("CalDAV connected", async () => {
-                  await api.connectCaldav(request);
+                runAction("", async () => {
+                  const account = await api.connectCaldav(request);
+                  setMessage(`Connected ${account.display_name}`);
                 })
               }
               onConnectApple={() =>

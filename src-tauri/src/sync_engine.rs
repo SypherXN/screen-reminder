@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 
 use crate::calendar::build_provider;
-use crate::dedupe::dedupe_reminders;
-use crate::models::{AccountSyncStatus, ReminderEvent};
+use crate::models::AccountSyncStatus;
 use crate::storage::Storage;
 
 pub struct SyncEngine {
@@ -23,9 +22,8 @@ impl SyncEngine {
     }
 
     pub async fn sync_all(&self) -> Result<SyncReport> {
-        let settings = self.storage.get_settings()?;
         let accounts = self.storage.list_accounts()?;
-        let mut all_reminders: Vec<ReminderEvent> = Vec::new();
+        let mut reminders_upserted = 0;
         let mut account_statuses = Vec::new();
 
         for account in accounts {
@@ -38,22 +36,34 @@ impl SyncEngine {
                 reminders_synced: 0,
             };
 
-            let provider = match build_provider(&account.source) {
-                Ok(provider) => provider,
-                Err(err) => {
-                    status.last_error = Some(err.to_string());
-                    self.storage
-                        .set_account_sync_status(&account.id, &status)?;
-                    account_statuses.push(status);
-                    continue;
-                }
-            };
+            if let Err(err) = build_provider(&account.source) {
+                status.last_error = Some(err.to_string());
+                self.storage
+                    .set_account_sync_status(&account.id, &status)?;
+                account_statuses.push(status);
+                continue;
+            }
 
-            match provider.sync(&account) {
+            let source = account.source.clone();
+            let account_for_sync = account.clone();
+
+            // Provider sync uses async HTTP internally via block_on; run it off the
+            // Tauri async runtime thread to avoid deadlocks/panics after OAuth.
+            let sync_result = tokio::task::spawn_blocking(move || {
+                let provider = build_provider(&source)?;
+                provider.sync(&account_for_sync)
+            })
+            .await
+            .context("calendar sync task failed")?;
+
+            match sync_result {
                 Ok(result) => {
                     status.last_sync = Some(Utc::now());
                     status.reminders_synced = result.reminders.len();
-                    all_reminders.extend(result.reminders);
+                    reminders_upserted += self.storage.replace_reminders_for_account(
+                        &account.id,
+                        &result.reminders,
+                    )?;
                     if let Some(token) = result.sync_token {
                         let mut updated = account.clone();
                         updated.sync_token = Some(token);
@@ -74,16 +84,6 @@ impl SyncEngine {
                 .set_account_sync_status(&account.id, &status)?;
             account_statuses.push(status);
         }
-
-        if settings.dedupe_reminders {
-            all_reminders = dedupe_reminders(all_reminders);
-        }
-
-        let reminders_upserted = if all_reminders.is_empty() {
-            0
-        } else {
-            self.storage.upsert_reminders(&all_reminders)?
-        };
 
         self.storage
             .set_sync_meta("last_sync", &Utc::now().to_rfc3339())?;

@@ -150,6 +150,42 @@ impl Storage {
         .context("get account")
     }
 
+    pub fn find_account_by_source_and_email(
+        &self,
+        source: &str,
+        email: &str,
+    ) -> Result<Option<CalendarAccount>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, source, display_name, email, sync_token, caldav_url, caldav_username, connected_at, style_json
+             FROM calendar_accounts
+             WHERE source = ?1 AND lower(email) = lower(?2)
+             LIMIT 1",
+            params![source, email],
+            parse_account_row,
+        )
+        .optional()
+        .context("find account by source and email")
+    }
+
+    pub fn find_caldav_account(
+        &self,
+        caldav_url: &str,
+        username: &str,
+    ) -> Result<Option<CalendarAccount>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, source, display_name, email, sync_token, caldav_url, caldav_username, connected_at, style_json
+             FROM calendar_accounts
+             WHERE source = 'caldav' AND caldav_url = ?1 AND caldav_username = ?2
+             LIMIT 1",
+            params![caldav_url, username],
+            parse_account_row,
+        )
+        .optional()
+        .context("find caldav account")
+    }
+
     pub fn upsert_account(&self, account: &CalendarAccount) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let style_json = account
@@ -340,6 +376,20 @@ impl Storage {
         Ok(())
     }
 
+    pub fn replace_reminders_for_account(
+        &self,
+        account_id: &str,
+        reminders: &[ReminderEvent],
+    ) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM reminder_events WHERE account_id = ?1",
+            params![account_id],
+        )?;
+        drop(conn);
+        self.upsert_reminders(reminders)
+    }
+
     pub fn upsert_reminders(&self, reminders: &[ReminderEvent]) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let mut count = 0;
@@ -449,6 +499,30 @@ impl Storage {
             |row| row.get(0),
         )?;
         Ok(count as usize)
+    }
+
+    pub fn list_upcoming_reminders(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<ReminderEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, source, external_id, title, start_time, reminder_time, location, url, fired_at, snoozed_until, dismissed
+             FROM reminder_events
+             WHERE dismissed = 0
+               AND (
+                 start_time >= ?1
+                 OR reminder_time >= ?1
+                 OR (snoozed_until IS NOT NULL AND snoozed_until >= ?1)
+               )
+             ORDER BY start_time ASC
+             LIMIT ?2",
+        )?;
+        let now_str = now.to_rfc3339();
+        let rows = stmt.query_map(params![now_str, limit as i64], parse_reminder_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("list upcoming reminders")
     }
 
     pub fn set_sync_meta(&self, key: &str, value: &str) -> Result<()> {

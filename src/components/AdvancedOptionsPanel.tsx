@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
   addLayerToComposition,
   createDefaultComposition,
@@ -251,19 +251,35 @@ export function AdvancedOptionsPanel({ settings, onChange }: Props) {
               </label>
             </div>
 
-            <div className="layer-editor-canvas overflow-x-auto rounded-2xl border border-dashed border-slate-700 p-6">
-              <ReminderBubble
-                settings={settings}
-                title="Team standup"
-                location="Zoom"
-                startTime={previewStartTime(15)}
-                interactive={false}
-                editMode
-                selectedLayerId={selectedLayerId}
-                onSelectLayer={setSelectedLayerId}
-                onCompositionChange={updateComp}
-                className="mx-auto"
-              />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-slate-500">
+                <span>Notification bounds — content outside the border is clipped on screen</span>
+                <span className="font-mono text-slate-400">
+                  {composition.canvas_width} × {composition.canvas_height}px
+                </span>
+              </div>
+
+              <div
+                className="layer-editor-workspace"
+                style={
+                  {
+                    "--canvas-width": `${composition.canvas_width}px`,
+                    "--canvas-height": `${composition.canvas_height}px`,
+                  } as CSSProperties
+                }
+              >
+                <ReminderBubble
+                  settings={settings}
+                  title="Team standup"
+                  location="Zoom"
+                  startTime={previewStartTime(15)}
+                  interactive={false}
+                  editMode
+                  selectedLayerId={selectedLayerId}
+                  onSelectLayer={setSelectedLayerId}
+                  onCompositionChange={updateComp}
+                />
+              </div>
             </div>
 
             {selectedLayer && (
@@ -374,13 +390,36 @@ function LayerProperties({
           <>
             <label className="block text-sm md:col-span-2">
               <span className="mb-1 block text-slate-400">Text</span>
-              <input
+              <textarea
                 value={layer.text_content ?? ""}
                 onChange={(e) => onChange({ text_content: e.target.value })}
+                rows={3}
                 className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2"
               />
             </label>
             <label className="block text-sm">
+              <span className="mb-1 block text-slate-400">Box width ({layer.width ?? 140}px)</span>
+              <input
+                type="range"
+                min={60}
+                max={320}
+                value={layer.width ?? 140}
+                onChange={(e) => onChange({ width: Number(e.target.value) })}
+                className="w-full"
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-slate-400">Box height ({layer.height ?? 40}px)</span>
+              <input
+                type="range"
+                min={24}
+                max={120}
+                value={layer.height ?? 40}
+                onChange={(e) => onChange({ height: Number(e.target.value) })}
+                className="w-full"
+              />
+            </label>
+            <label className="block text-sm md:col-span-2">
               <span className="mb-1 block text-slate-400">Font size override</span>
               <input
                 type="number"
@@ -399,11 +438,39 @@ function LayerProperties({
           </>
         )}
 
-        {(layer.type === "title" || layer.type === "countdown") && (
+        {layer.type === "title" && (
+          <>
+            <p className="text-sm text-slate-400 md:col-span-2">
+              Shows the event title and location when a reminder fires.
+            </p>
+            <label className="block text-sm">
+              <span className="mb-1 block text-slate-400">Box width ({layer.width ?? 220}px)</span>
+              <input
+                type="range"
+                min={80}
+                max={320}
+                value={layer.width ?? 220}
+                onChange={(e) => onChange({ width: Number(e.target.value) })}
+                className="w-full"
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-slate-400">Box height ({layer.height ?? 52}px)</span>
+              <input
+                type="range"
+                min={28}
+                max={120}
+                value={layer.height ?? 52}
+                onChange={(e) => onChange({ height: Number(e.target.value) })}
+                className="w-full"
+              />
+            </label>
+          </>
+        )}
+
+        {layer.type === "countdown" && (
           <p className="text-sm text-slate-400 md:col-span-2">
-            {layer.type === "title"
-              ? "Shows the event title and location when a reminder fires."
-              : "Shows a live countdown until the event start time."}
+            Shows a live countdown until the event start time.
           </p>
         )}
       </div>

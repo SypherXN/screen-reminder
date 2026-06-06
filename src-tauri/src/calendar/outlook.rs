@@ -3,13 +3,15 @@ use chrono::{Duration, Utc};
 use oauth2::basic::BasicClient;
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
-    RedirectUrl, Scope, TokenUrl,
+    RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::Deserialize;
 use tiny_http::{Header, Response, Server};
 
-use crate::calendar::{reminder_from_parts, CalendarProvider, SyncResult};
+use crate::config;
+use crate::calendar::{parse_ical_datetime, reminder_from_parts, CalendarProvider, SyncResult};
+use crate::oauth_util::{oauth_http_client, OAuthClient, MICROSOFT_OAUTH_PROMPT, parse_oauth_error};
 use crate::models::CalendarAccount;
 use crate::secrets;
 
@@ -28,10 +30,9 @@ impl OutlookProvider {
         })
     }
 
-    fn oauth_client(redirect_uri: &str) -> Result<BasicClient> {
-        let client_id = std::env::var("MICROSOFT_CLIENT_ID").context("MICROSOFT_CLIENT_ID not set")?;
-        let client_secret = std::env::var("MICROSOFT_CLIENT_SECRET")
-            .context("MICROSOFT_CLIENT_SECRET not set")?;
+    fn oauth_client(redirect_uri: &str) -> Result<OAuthClient> {
+        let client_id = config::require_env("MICROSOFT_CLIENT_ID")?;
+        let client_secret = config::require_env("MICROSOFT_CLIENT_SECRET")?;
 
         Ok(BasicClient::new(ClientId::new(client_id))
             .set_client_secret(ClientSecret::new(client_secret))
@@ -51,6 +52,7 @@ impl OutlookProvider {
             .add_scope(Scope::new("Calendars.Read".to_string()))
             .add_scope(Scope::new("offline_access".to_string()))
             .add_scope(Scope::new("User.Read".to_string()))
+            .add_extra_param("prompt", MICROSOFT_OAUTH_PROMPT)
             .set_pkce_challenge(pkce_challenge)
             .url();
 
@@ -60,13 +62,17 @@ impl OutlookProvider {
             .map_err(|err| anyhow::anyhow!("oauth server: {err}"))?;
         let request = server.recv().map_err(|err| anyhow::anyhow!("oauth recv: {err}"))?;
         let query = request.url().split('?').nth(1).unwrap_or("");
+        if let Some(error) = parse_oauth_error(query) {
+            anyhow::bail!("Microsoft sign-in failed: {error}");
+        }
         let code = crate::oauth_util::parse_query_param(query, "code")
             .context("missing authorization code")?;
 
+        let http = oauth_http_client();
         let token = client
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
-            .request_async(oauth2::reqwest::async_http_client)
+            .request_async(&http)
             .await
             .context("exchange token")?;
 
@@ -122,8 +128,8 @@ impl OutlookProvider {
         let refresh = tokens
             .refresh_token
             .context("missing refresh token for outlook account")?;
-        let client_id = std::env::var("MICROSOFT_CLIENT_ID")?;
-        let client_secret = std::env::var("MICROSOFT_CLIENT_SECRET")?;
+        let client_id = config::require_env("MICROSOFT_CLIENT_ID")?;
+        let client_secret = config::require_env("MICROSOFT_CLIENT_SECRET")?;
 
         #[derive(Deserialize)]
         struct TokenResponseBody {
@@ -207,8 +213,17 @@ impl OutlookProvider {
             let start_time = event
                 .start
                 .and_then(|s| s.date_time)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_else(Utc::now);
+                .and_then(|s| parse_ical_datetime(&s).ok())
+                .or_else(|| {
+                    log::warn!(
+                        "skipping outlook event {:?}: could not parse start time",
+                        event.subject
+                    );
+                    None
+                });
+            let Some(start_time) = start_time else {
+                continue;
+            };
 
             reminders.push(reminder_from_parts(
                 account,
@@ -234,6 +249,7 @@ struct GraphEventsResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GraphEvent {
     id: Option<String>,
     subject: Option<String>,
@@ -245,16 +261,19 @@ struct GraphEvent {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GraphDateTime {
     date_time: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GraphLocation {
     display_name: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GraphProfile {
     display_name: Option<String>,
     mail: Option<String>,

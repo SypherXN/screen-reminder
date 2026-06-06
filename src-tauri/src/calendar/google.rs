@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use oauth2::basic::BasicClient;
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
@@ -10,8 +10,12 @@ use serde::Deserialize;
 use tiny_http::{Header, Response, Server};
 use url::Url;
 
-use crate::calendar::{reminder_from_parts, CalendarProvider, SyncResult};
-use crate::oauth_util::{open_browser, parse_query_param, pick_port};
+use crate::calendar::{reminder_from_parts, parse_all_day_date, parse_ical_datetime, CalendarProvider, SyncResult};
+use crate::config;
+use crate::oauth_util::{
+    oauth_http_client, open_browser, parse_oauth_error, parse_query_param, pick_port, OAuthClient,
+    GOOGLE_OAUTH_PROMPT,
+};
 use crate::models::CalendarAccount;
 use crate::secrets;
 
@@ -30,10 +34,9 @@ impl GoogleProvider {
         })
     }
 
-    pub fn oauth_client(redirect_uri: &str) -> Result<BasicClient> {
-        let client_id = std::env::var("GOOGLE_CLIENT_ID").context("GOOGLE_CLIENT_ID not set")?;
-        let client_secret =
-            std::env::var("GOOGLE_CLIENT_SECRET").context("GOOGLE_CLIENT_SECRET not set")?;
+    pub fn oauth_client(redirect_uri: &str) -> Result<OAuthClient> {
+        let client_id = config::require_env("GOOGLE_CLIENT_ID")?;
+        let client_secret = config::require_env("GOOGLE_CLIENT_SECRET")?;
 
         Ok(BasicClient::new(ClientId::new(client_id))
             .set_client_secret(ClientSecret::new(client_secret))
@@ -50,7 +53,14 @@ impl GoogleProvider {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (auth_url, _csrf) = client
             .authorize_url(CsrfToken::new_random)
-            .add_scope(Scope::new("https://www.googleapis.com/auth/calendar.readonly".to_string()))
+            .add_scope(Scope::new(
+                "https://www.googleapis.com/auth/calendar.readonly".to_string(),
+            ))
+            .add_scope(Scope::new(
+                "https://www.googleapis.com/auth/userinfo.email".to_string(),
+            ))
+            .add_extra_param("access_type", "offline")
+            .add_extra_param("prompt", GOOGLE_OAUTH_PROMPT)
             .set_pkce_challenge(pkce_challenge)
             .url();
 
@@ -63,12 +73,21 @@ impl GoogleProvider {
             .recv()
             .map_err(|err| anyhow::anyhow!("oauth recv: {err}"))?;
         let query = request.url().split('?').nth(1).unwrap_or("");
+        if let Some(error) = parse_oauth_error(query) {
+            let response = Response::from_string(format!(
+                "<html><body><h1>Sign-in failed</h1><p>{error}</p><p>You can close this window and return to Screen Reminder.</p></body></html>"
+            ))
+            .with_header(Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap());
+            let _ = request.respond(response);
+            anyhow::bail!("Google sign-in failed: {error}");
+        }
         let code = parse_query_param(query, "code").context("missing authorization code")?;
 
+        let http = oauth_http_client();
         let token = client
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
-            .request_async(oauth2::reqwest::async_http_client)
+            .request_async(&http)
             .await
             .context("exchange token")?;
 
@@ -125,8 +144,8 @@ impl GoogleProvider {
         let refresh = tokens
             .refresh_token
             .context("missing refresh token for google account")?;
-        let client_id = std::env::var("GOOGLE_CLIENT_ID")?;
-        let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")?;
+        let client_id = config::require_env("GOOGLE_CLIENT_ID")?;
+        let client_secret = config::require_env("GOOGLE_CLIENT_SECRET")?;
 
         #[derive(Deserialize)]
         struct TokenResponseBody {
@@ -211,25 +230,22 @@ impl GoogleProvider {
             if item.status.as_deref() == Some("cancelled") {
                 continue;
             }
+            let Some(start) = parse_google_event_start(item.start.as_ref()) else {
+                log::warn!(
+                    "skipping google event {:?}: could not parse start time",
+                    item.summary
+                );
+                continue;
+            };
             let title = item.summary.unwrap_or_else(|| "Untitled event".to_string());
-            let start = item
-                .start
-                .and_then(|s| s.date_time.or(s.date))
-                .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
-                .unwrap_or_else(Utc::now);
-
-            let minutes_before = item
-                .reminders
-                .and_then(|r| r.overrides)
-                .and_then(|overrides| overrides.first().map(|o| o.minutes))
-                .unwrap_or(10);
+            let minutes_before = google_overlay_minutes_before(item.reminders.as_ref());
 
             reminders.push(reminder_from_parts(
                 account,
                 &item.id.unwrap_or_else(|| title.clone()),
                 &title,
                 start,
-                minutes_before as i64,
+                minutes_before,
                 item.location,
                 item.html_link,
             ));
@@ -261,18 +277,66 @@ struct GoogleEvent {
 
 #[derive(Deserialize)]
 struct GoogleEventTime {
+    #[serde(rename = "dateTime")]
     date_time: Option<String>,
     date: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct GoogleReminders {
+    #[serde(rename = "useDefault")]
+    use_default: Option<bool>,
     overrides: Option<Vec<GoogleReminderOverride>>,
 }
 
 #[derive(Deserialize)]
 struct GoogleReminderOverride {
+    method: Option<String>,
     minutes: i32,
+}
+
+fn parse_google_event_start(start: Option<&GoogleEventTime>) -> Option<DateTime<Utc>> {
+    let start = start?;
+    if let Some(date_time) = &start.date_time {
+        return parse_ical_datetime(date_time).ok();
+    }
+    if let Some(date) = &start.date {
+        return parse_all_day_date(date).ok();
+    }
+    None
+}
+
+/// Screen overlays should follow popup reminders, not email/SMS alerts days in advance.
+fn google_overlay_minutes_before(reminders: Option<&GoogleReminders>) -> i64 {
+    const DEFAULT_MINUTES: i64 = 10;
+
+    let Some(reminders) = reminders else {
+        return DEFAULT_MINUTES;
+    };
+
+    if reminders.use_default.unwrap_or(false)
+        && reminders
+            .overrides
+            .as_ref()
+            .map(|overrides| overrides.is_empty())
+            .unwrap_or(true)
+    {
+        return DEFAULT_MINUTES;
+    }
+
+    let popup_minutes: Vec<i32> = reminders
+        .overrides
+        .iter()
+        .flatten()
+        .filter(|entry| entry.method.as_deref() == Some("popup"))
+        .map(|entry| entry.minutes)
+        .collect();
+
+    if let Some(minutes) = popup_minutes.into_iter().min() {
+        return minutes.max(0) as i64;
+    }
+
+    DEFAULT_MINUTES
 }
 
 async fn fetch_user_email(access_token: &str) -> Result<String> {
